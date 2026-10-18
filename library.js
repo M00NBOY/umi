@@ -256,5 +256,16 @@
   }
   render().catch((err) => { $('games').textContent = err.message; });
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    // A new version of the site, just taken over from the old one: show it
+    // now rather than on the next visit (only here, never during a game).
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading || busy) return;
+      reloading = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 })();

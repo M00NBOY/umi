@@ -43,11 +43,17 @@
 
   const touchDevice = matchMedia('(pointer: coarse)').matches;
   const turnButton = controls.querySelector('[data-action="turn"]');
-  let turned = false; // the reader's choice, kept from one visit to the next
+  // The reader's choice with the Turn button, kept from one visit to the
+  // next, for a page that is upright (0 or 1) and one that is sideways (0, 1
+  // or 2: which way to turn is not known, so both are offered in turn).
+  let turned = 0;
+  let turnedSideways = 0;
   let textBelow = false; // the text is shown under the picture, not on it
+  let stageAngle = 0;    // how the stage is turned: 0, 90 or -90 degrees
   const waitIcons = {}; // 1, 2 -> the game's click-wait icons, from the script
   try {
-    turned = localStorage.getItem('umineko.turned') === '1';
+    turned = localStorage.getItem('umineko.turned') === '1' ? 1 : 0;
+    turnedSideways = Number(localStorage.getItem('umineko.turnedSideways')) || 0;
   } catch (err) { /* private browsing */ }
   document.body.classList.toggle('no-controls', !touchDevice);
 
@@ -57,31 +63,37 @@
    * is what limits the picture. A phone held upright gives that side in full
    * (the browser's bars are on the other one): there the Turn button turns
    * the stage a quarter, and the reader turns the phone instead of the screen.
+   * A page shown sideways that the reader cannot turn upright (a phone that
+   * keeps it so) is turned the other way: the upright layout, with the text
+   * under the picture, read with the phone held upright.
    */
   function layout() {
-    const portrait = innerHeight > innerWidth;
-    const rotated = portrait && touchDevice && turned;
-    turnButton.hidden = !portrait;
+    const upright = innerHeight > innerWidth;
+    const turn = !touchDevice ? 0 : upright ? turned : turnedSideways;
+    stageAngle = !turn ? 0 : upright || turn === 1 ? 90 : -90;
+    const rotated = stageAngle !== 0;
+    const portrait = rotated ? !upright : upright; // the layout, as the reader sees it
     turnButton.classList.toggle('on', rotated);
     document.body.classList.toggle('rotated', rotated);
-    document.body.classList.toggle('portrait', portrait && !rotated);
+    document.body.classList.toggle('portrait', portrait);
     stage.style.width = rotated ? `${innerHeight}px` : '';
     stage.style.height = rotated ? `${innerWidth}px` : '';
-    stage.style.transform = rotated ? `translateX(${innerWidth}px) rotate(90deg)` : '';
+    stage.style.transform = stageAngle === 90 ? `translateX(${innerWidth}px) rotate(90deg)`
+      : stageAngle === -90 ? `translateY(${innerHeight}px) rotate(-90deg)` : '';
     touchLayer.hidden = !touchDevice;
     // Read sideways, the buttons stay out of the way until asked for.
-    const autoHide = touchDevice && !(portrait && !rotated);
+    const autoHide = touchDevice && !portrait;
     document.body.classList.toggle('autohide', autoHide);
     if (!autoHide) showControls(false);
     const style = getComputedStyle(stage);
     let width = stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     let height = stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
     if (!controls.hidden && touchDevice && !autoHide) {
-      if (portrait && !rotated) height -= controls.offsetHeight;
+      if (portrait) height -= controls.offsetHeight;
       else width -= controls.offsetWidth;
     }
-    if (portrait && !rotated) height *= 0.6; // the rest for the text in large print
-    textBelow = portrait && !rotated;
+    if (portrait) height *= 0.6; // the rest for the text in large print
+    textBelow = portrait;
     if (Module) {
       Module._web_set_text_off_picture(textBelow ? 1 : 0,
         waitIcons[1] ? waitIcons[1].sprite : -1, waitIcons[2] ? waitIcons[2].sprite : -1);
@@ -725,8 +737,7 @@
   reader.addEventListener('touchend', (event) => {
     const t = event.changedTouches[0];
     if (!swipeFrom || !t || !Module) return;
-    const dx = t.clientX - swipeFrom.x;
-    const dy = t.clientY - swipeFrom.y;
+    const [dx, dy] = turnedDelta(t.clientX - swipeFrom.x, t.clientY - swipeFrom.y);
     const atTop = swipeFrom.top <= 0;
     const atEnd = swipeFrom.top + reader.clientHeight >= reader.scrollHeight - 2;
     swipeFrom = null;
@@ -1131,11 +1142,12 @@
     log() { Module._web_push_wheel(1); },
     auto() { tapKey(SDLK.a); },
     skip() { tapKey(SDLK.s); },
-    fullscreen: toggleFullscreen,
     turn() {
-      turned = !turned;
+      if (innerHeight > innerWidth) turned = 1 - turned;
+      else turnedSideways = (turnedSideways + 1) % 3;
       try {
-        localStorage.setItem('umineko.turned', turned ? '1' : '0');
+        localStorage.setItem('umineko.turned', String(turned));
+        localStorage.setItem('umineko.turnedSideways', String(turnedSideways));
       } catch (err) { /* not remembered */ }
       layout();
     },
@@ -1173,19 +1185,26 @@
   const SDL_BUTTON_LEFT = 1;
   let touchFrom = null; // { start, last } in game pixels, while one finger is down
 
+  /** A point on the screen as a fraction of the stage's turned picture. */
+  function turnedFraction(x, y, box) {
+    const fx = (x - box.left) / box.width;
+    const fy = (y - box.top) / box.height;
+    if (stageAngle === 90) return [fy, 1 - fx];
+    if (stageAngle === -90) return [1 - fy, fx];
+    return [fx, fy];
+  }
+
+  /** A movement on the screen, along the turned stage's axes. */
+  function turnedDelta(dx, dy) {
+    if (stageAngle === 90) return [dy, -dx];
+    if (stageAngle === -90) return [-dy, dx];
+    return [dx, dy];
+  }
+
   function gamePoint(touch) {
-    const box = frame.getBoundingClientRect();
     const along = (value) => Math.min(1, Math.max(0, value));
-    if (document.body.classList.contains('rotated')) {
-      return [
-        Math.round(along((touch.clientY - box.top) / box.height) * (canvas.width - 1)),
-        Math.round(along(1 - (touch.clientX - box.left) / box.width) * (canvas.height - 1)),
-      ];
-    }
-    return [
-      Math.round(along((touch.clientX - box.left) / box.width) * (canvas.width - 1)),
-      Math.round(along((touch.clientY - box.top) / box.height) * (canvas.height - 1)),
-    ];
+    const [fx, fy] = turnedFraction(touch.clientX, touch.clientY, frame.getBoundingClientRect());
+    return [Math.round(along(fx) * (canvas.width - 1)), Math.round(along(fy) * (canvas.height - 1))];
   }
 
   function onPictureTouch(event) {
@@ -1222,11 +1241,6 @@
 
   for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
     touchLayer.addEventListener(type, onPictureTouch, { passive: false });
-  }
-
-  // iPhones cannot put a page in full screen: do not offer it there.
-  if (!document.documentElement.requestFullscreen && !document.documentElement.webkitRequestFullscreen) {
-    controls.querySelector('[data-action="fullscreen"]').hidden = true;
   }
 
   // ------------------------------------------------------------------ boot
@@ -1282,6 +1296,9 @@
     boot.hidden = true;
     controls.hidden = false;
     layout(); // also hands the engine textBelow
+    // Shown for a moment at first, so that a reader who has them hidden
+    // (read sideways) knows they are there.
+    if (document.body.classList.contains('autohide')) showControls(true);
     canvas.focus();
 
     setInterval(syncSaves, 250);
