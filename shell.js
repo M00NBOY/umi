@@ -1083,6 +1083,9 @@
 
   const uploaded = new Map();
   let syncing = false;
+  // Since when a save the engine wrote has not been kept (0: all kept).
+  let unkeptSince = 0;
+  const saveWarning = $('save-warning');
 
   function listLocalSaves(dir, prefix, out) {
     const FS = Module.FS;
@@ -1101,19 +1104,27 @@
 
   /** Sends every save file the engine has written since the last pass. */
   async function syncSaves() {
+    // The Load screen shows a save as soon as the engine wrote it, kept or not.
+    saveWarning.hidden = !unkeptSince || Date.now() - unkeptSince < 3000;
     if (syncing || !Module) return;
     syncing = true;
     try {
       for (const file of listLocalSaves(SAVE_DIR, '', [])) {
         if (uploaded.get(file.name) === file.stamp) continue;
+        if (!unkeptSince) unkeptSince = Date.now();
         await source.writeSave(file.name, Module.FS.readFile(file.full));
         uploaded.set(file.name, file.stamp);
       }
+      unkeptSince = 0;
     } catch (err) {
-      // Offline: the files stay marked as changed and go out on a later pass.
+      // The files stay marked as changed and go out on a later pass.
       debug('save not kept yet', err);
+      try {
+        localStorage.setItem('umineko.lastSaveError', `${new Date().toISOString()} ${err && err.message ? err.message : err}`);
+      } catch (e) { /* not remembered */ }
     } finally {
       syncing = false;
+      if (!unkeptSince) saveWarning.hidden = true;
     }
   }
 

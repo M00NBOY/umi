@@ -350,6 +350,22 @@ body.autohide:not(.controls-shown) #controls { opacity: 0; pointer-events: none;
 #reader-buttons .choice { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 1em; }
 
 
+/* A save the engine wrote but the device or server has not kept yet. */
+#save-warning {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: rgba(150, 30, 30, 0.85);
+  color: #fff;
+  font: 12px system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* A movie that had to start without sound says how to get it. */
 #video-hint {
   position: absolute;

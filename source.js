@@ -65,7 +65,8 @@ window.ponsSource = (() => {
     },
 
     async writeSave(name, bytes) {
-      await store.call('writeSaves', { id: gameId, saves: [{ name, bytes }] });
+      // A save is a few KB: written in well under a second when all is well.
+      await store.call('writeSaves', { id: gameId, saves: [{ name, bytes }] }, null, 5000);
     },
 
     /**

@@ -69,10 +69,23 @@ window.ponsStore = (() => {
   let seq = 0;
   const calls = new Map();
 
-  /** Runs a write in the worker; onProgress gets its progress reports. */
-  function call(op, args, onProgress) {
+  /** Drops a worker that died or stopped answering; the next call starts a new one. */
+  function restart(reason) {
+    if (worker) worker.terminate();
+    worker = null;
+    for (const c of calls.values()) c.reject(new Error(reason));
+    calls.clear();
+  }
+
+  /**
+   * Runs a write in the worker; onProgress gets its progress reports. With
+   * timeoutMs, gives up past it: iOS can leave a worker of a page that went
+   * to the background silent for good.
+   */
+  function call(op, args, onProgress, timeoutMs) {
     if (!worker) {
       worker = new Worker('store-worker.js');
+      worker.onerror = () => restart('the storage worker failed');
       worker.onmessage = (event) => {
         const { seq: id, progress, result, error } = event.data;
         const c = calls.get(id);
@@ -82,13 +95,15 @@ window.ponsStore = (() => {
           return;
         }
         calls.delete(id);
+        clearTimeout(c.timer);
         if (error) c.reject(new Error(error));
         else c.resolve(result);
       };
     }
     return new Promise((resolve, reject) => {
       seq++;
-      calls.set(seq, { resolve, reject, onProgress });
+      const timer = timeoutMs ? setTimeout(() => restart('the storage did not answer'), timeoutMs) : 0;
+      calls.set(seq, { resolve, reject, onProgress, timer });
       worker.postMessage({ seq, op, args });
     });
   }
