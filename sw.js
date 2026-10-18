@@ -4,7 +4,7 @@
 // back, so a new version shows on the visit after it was published.
 'use strict';
 
-const CACHE = 'umineko-vc5905ac0f711';
+const CACHE = 'umineko-v94b98ae8f2be';
 const FILES = [
   './', 'index.html', 'play.html', 'style.css', 'app.webmanifest', 'icon.png',
   'library.js', 'library.css', 'store.js', 'store-worker.js', 'source.js', 'shell.js',
@@ -12,7 +12,9 @@ const FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)).then(() => self.skipWaiting()));
+  // Past the browser's HTTP cache, which may still hold the previous version.
+  const requests = FILES.map((file) => new Request(file, { cache: 'reload' }));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(requests)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
@@ -28,7 +30,7 @@ self.addEventListener('fetch', (event) => {
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const cached = await cache.match(request, { ignoreSearch: true });
-    const fresh = fetch(request).then((response) => {
+    const fresh = fetch(request, { cache: 'no-cache' }).then((response) => {
       if (response.ok) cache.put(request.url.split('?')[0], response.clone());
       return response;
     });

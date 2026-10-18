@@ -386,16 +386,17 @@
       video.onerror = finish;
       video.onclick = () => { if (skippable) finish(); };
       addEventListener('keyup', onKey, true);
-      const url = source.movieUrl(name);
-      if (!url) return finish();
-      video.muted = false;
-      video.src = url;
-      video.hidden = false;
-      video.play().catch(() => {
-        // Sound was refused without a fresh tap: play silently instead.
-        video.muted = true;
-        video.play().catch(finish);
-      });
+      Promise.resolve(source.movieUrl(name)).then((url) => {
+        if (!url) return finish(); // no version of it this browser can play
+        video.muted = false;
+        video.src = url;
+        video.hidden = false;
+        video.play().catch(() => {
+          // Sound was refused without a fresh tap: play silently instead.
+          video.muted = true;
+          video.play().catch(finish);
+        });
+      }, finish);
     });
   }
 

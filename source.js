@@ -7,6 +7,7 @@ window.ponsSource = (() => {
   let gameId = '';
   let entries = new Map(); // key -> [file under data/, offset, length]
   const files = new Map(); // file under data/ -> Promise<File>
+  let movieUrl = null;
 
   const gone = () => Object.assign(new Error('game files missing'), {
     userMessage: 'The game is no longer on this device — import it again from the game list',
@@ -67,8 +68,19 @@ window.ponsSource = (() => {
       await store.call('writeSaves', { id: gameId, saves: [{ name, bytes }] });
     },
 
-    movieUrl() {
-      return null;
+    /**
+     * Browsers cannot play the game's own movies (MPEG-1, WMV): an MP4 of
+     * the same name put in the game's "movie" folder before importing is
+     * played instead (the server version makes them with ffmpeg).
+     */
+    async movieUrl(name) {
+      const entry = entries.get(`movie/${name}.mp4`);
+      if (!entry) return null;
+      const file = await dataFile(entry[0]);
+      if (!file) return null;
+      if (movieUrl) URL.revokeObjectURL(movieUrl);
+      movieUrl = URL.createObjectURL(file.slice(entry[1], entry[1] + entry[2], 'video/mp4'));
+      return movieUrl;
     },
   };
 })();
