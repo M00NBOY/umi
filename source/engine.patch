@@ -1,8 +1,30 @@
 diff --git a/src/Fontinfo.cpp b/src/Fontinfo.cpp
-index b923284..8bb7d72 100644
+index b923284..1e34735 100644
 --- a/src/Fontinfo.cpp
 +++ b/src/Fontinfo.cpp
-@@ -109,7 +109,9 @@ Font* FontsStruct::font(int style)
+@@ -40,6 +40,7 @@ int Fontinfo::default_encoding = 0;
+ static class FontsStruct {
+     friend void MapFont(int, const pstring&);
+     friend void MapMetrics(int, const pstring&);
++    friend const char* FontFileName(int);
+ 
+     static const int count = 8;
+     bool isinit;
+@@ -90,6 +91,13 @@ void MapFont(int id, const pstring& filename)
+ }
+ 
+ 
++const char* FontFileName(int style)
++{
++    if (style < 0 || style >= FontsStruct::count) return NULL;
++    return Fonts.mapping[style];
++}
++
++
+ void MapMetrics(int id, const pstring& filename)
+ {
+     Fonts.metrics[id] = filename;
+@@ -109,7 +117,9 @@ Font* FontsStruct::font(int style)
      FILE* fp = NULL;
      int n=0;
  
@@ -13,8 +35,20 @@ index b923284..8bb7d72 100644
          pstring curpath = path->get_path(n++);
  
          pstring fpath = curpath + mapping[style];
+diff --git a/src/Fontinfo.h b/src/Fontinfo.h
+index f39f45e..230d7cd 100644
+--- a/src/Fontinfo.h
++++ b/src/Fontinfo.h
+@@ -35,6 +35,7 @@ extern int screen_ratio1, screen_ratio2;
+ 
+ extern void MapFont(int id, const pstring& filename);
+ extern void MapMetrics(int id, const pstring& filename);
++extern const char* FontFileName(int style);
+ 
+ void InitialiseFontSystem(DirPaths *basepath);
+ 
 diff --git a/src/PonscripterLabel.cpp b/src/PonscripterLabel.cpp
-index bb7e0a1..4c45970 100644
+index bb7e0a1..ab6fa0f 100644
 --- a/src/PonscripterLabel.cpp
 +++ b/src/PonscripterLabel.cpp
 @@ -26,6 +26,9 @@
@@ -54,7 +88,125 @@ index bb7e0a1..4c45970 100644
  
      /* end chronotrig */
  
-@@ -1445,7 +1458,16 @@ void PonscripterLabel::flush(int refresh_mode, SDL_Rect* rect, bool clear_dirty_
+@@ -576,6 +589,97 @@ void PonscripterLabel::openAudio(int freq, Uint16 format, int channels)
+ }
+ 
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++
++static PonscripterLabel* web_label = NULL;
++
++static void web_json_string(pstring& out, const pstring& text)
++{
++    out += "\"";
++    for (const char* c = text; *c; ++c) {
++        if (*c == '"' || *c == '\\') { out += "\\"; out += *c; }
++        else if ((unsigned char) *c < 0x20) out += ' ';
++        else out += *c;
++    }
++    out += "\"";
++}
++
++/* The buttons the reader can press now, for the page to show them again
++ * under the picture: {"wait":1,"buttons":[...]}, each with its area in game
++ * pixels and, for a choice made of text (select), that text, its style and
++ * its two colours (off, and under the pointer). */
++const char* PonscripterLabel::webButtons()
++{
++    static pstring out;
++    out = "{\"wait\":";
++    out += (event_mode & WAIT_BUTTON_MODE) ? "1" : "0";
++    out += ",\"buttons\":[";
++    bool first = true;
++    for (ButtonElt::iterator it = buttons.begin(); it != buttons.end(); ++it) {
++        ButtonElt& b = it->second;
++        if (b.isSprite() && !sprite_info[b.sprite_no].showing()) continue;
++        if (b.select_rect.w <= 0 || b.select_rect.h <= 0) continue;
++        if (!first) out += ",";
++        first = false;
++        pstring item;
++        item.format("{\"id\":%d,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d",
++                    it->first, b.select_rect.x, b.select_rect.y,
++                    b.select_rect.w, b.select_rect.h);
++        out += item;
++        // Text, on a button of its own (select) or a sprite (":s#off#on;text").
++        AnimationInfo* anim = b.isSprite() ? &sprite_info[b.sprite_no]
++                            : b.isTmpSprite() ? b.anim[0] : NULL;
++        if (anim && anim->trans_mode == AnimationInfo::TRANS_STRING
++            && anim->color_list.size() >= 2 && anim->file_name) {
++            // The text as it reads: no markers or style codes.
++            Fontinfo f = sentence_font;
++            f.style = Default;
++            pstring text;
++            int style = -1;
++            const char* c = anim->file_name;
++            while (*c) {
++                if (*c == file_encoding->TextMarker()) { ++c; continue; }
++                int bytes;
++                wchar u = file_encoding->DecodeWithLigatures(c, f, bytes);
++                if (!f.processCode(c)) {
++                    if (style < 0 && u != ' ') style = f.style;
++                    text += file_encoding->Encode(u);
++                }
++                c += bytes;
++            }
++            out += ",\"text\":";
++            web_json_string(out, text);
++            item.format(",\"choice\":%d,\"style\":%d,\"off\":%d,\"on\":%d}",
++                b.isTmpSprite() ? 1 : 0, style < 0 ? 0 : style,
++                (anim->color_list[0].r << 16) | (anim->color_list[0].g << 8) | anim->color_list[0].b,
++                (anim->color_list[1].r << 16) | (anim->color_list[1].g << 8) | anim->color_list[1].b);
++            out += item;
++        }
++        else out += "}";
++    }
++    out += "]}";
++    return out;
++}
++
++extern "C" {
++EMSCRIPTEN_KEEPALIVE const char* web_buttons()
++{
++    return web_label ? web_label->webButtons() : "{\"wait\":0,\"buttons\":[]}";
++}
++
++/* The picture as last composed, 32-bit pixels (bytes B, G, R, A). */
++EMSCRIPTEN_KEEPALIVE void* web_screen_pixels()
++{
++    return web_label ? web_label->webScreen()->pixels : NULL;
++}
++EMSCRIPTEN_KEEPALIVE int web_screen_pitch()
++{
++    return web_label ? web_label->webScreen()->pitch : 0;
++}
++}
++#endif
++
+ PonscripterLabel::PonscripterLabel()
+     : registry_file(REGISTRY_FILE),
+       dll_file(DLL_FILE),
+@@ -584,6 +688,9 @@ PonscripterLabel::PonscripterLabel()
+       music_cmd(getenv("PLAYER_CMD")),
+       midi_cmd(getenv("MUSIC_CMD"))
+ {
++#ifdef __EMSCRIPTEN__
++    web_label = this;
++#endif
+ #if defined (USE_X86_GFX) && !defined(MACOSX)
+     // determine what functions the cpu supports (Mion)
+     {
+@@ -1429,6 +1536,9 @@ void PonscripterLabel::rerender() {
+ void PonscripterLabel::flush(int refresh_mode, SDL_Rect* rect, bool clear_dirty_flag,
+       bool direct_flag)
+ {
++#ifdef __EMSCRIPTEN__
++    web_note_text_window((display_mode & TEXT_DISPLAY_MODE) != 0);
++#endif
+     if (direct_flag) {
+         flushDirect(*rect, refresh_mode);
+     }
+@@ -1445,7 +1555,16 @@ void PonscripterLabel::flush(int refresh_mode, SDL_Rect* rect, bool clear_dirty_
                      flushDirect(dirty_rect.history[i], refresh_mode, false);
                  }
  
@@ -72,7 +224,7 @@ index bb7e0a1..4c45970 100644
              }
          }
      }
-@@ -1743,6 +1765,9 @@ int PonscripterLabel::parseLine()
+@@ -1743,6 +1862,9 @@ int PonscripterLabel::parseLine()
      /* Text */
      if (current_mode == DEFINE_MODE)
          errorAndExit("text cannot be displayed in define section.");
@@ -82,8 +234,126 @@ index bb7e0a1..4c45970 100644
  
  //--------INDENT ROUTINE--------------------------------------------------------
      if (sentence_font.GetXOffset() == 0 && sentence_font.GetYOffset() == 0) {
+@@ -1859,6 +1981,9 @@ int PonscripterLabel::parseLine()
+                 }
+             }
+             sentence_font.newLine();
++#ifdef __EMSCRIPTEN__
++            web_text_event(WEB_TEXT_NEWLINE);
++#endif
+         }
+         //event_mode = IDLE_EVENT_MODE;
+ 
+@@ -1926,6 +2051,9 @@ void PonscripterLabel::clearCurrentTextBuffer(int j)
+ 
+     if (current_read_language == -1 || current_read_language == current_language) {
+         text_info.fill(0, 0, 0, 0);
++#ifdef __EMSCRIPTEN__
++        web_text_event(WEB_TEXT_CLEAR);
++#endif
+     }
+     cached_text_buffer[j] = current_text_buffer[j];
+ }
+diff --git a/src/PonscripterLabel.h b/src/PonscripterLabel.h
+index 5c054b1..4d0b593 100644
+--- a/src/PonscripterLabel.h
++++ b/src/PonscripterLabel.h
+@@ -663,6 +663,12 @@ private:
+     Glyph current_glyph;
+ 
+     int  refreshMode();
++#ifdef __EMSCRIPTEN__
++public:
++    const char* webButtons(); // see web_buttons() in PonscripterLabel.cpp
++    SDL_Surface* webScreen() { return accumulation_surface; }
++private:
++#endif
+     void DoSetwindow(WindowDef& def);
+     void setwindowCore();
+ 
+diff --git a/src/PonscripterLabel_command.cpp b/src/PonscripterLabel_command.cpp
+index 25a14ea..fde7208 100644
+--- a/src/PonscripterLabel_command.cpp
++++ b/src/PonscripterLabel_command.cpp
+@@ -25,6 +25,9 @@
+ 
+ #include "PonscripterLabel.h"
+ #include "version.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++#endif
+ 
+ #include <sys/stat.h>
+ #include <sys/types.h>
+@@ -228,6 +231,9 @@ int PonscripterLabel::textonCommand(const pstring& cmd)
+     if (ret != RET_NOMATCH) return ret;
+ 
+     text_on_flag = true;
++#ifdef __EMSCRIPTEN__
++    web_text_event(WEB_TEXT_ON);
++#endif
+ 
+     return RET_CONTINUE;
+ }
+@@ -266,6 +272,9 @@ int PonscripterLabel::textclearCommand(const pstring& cmd)
+ int PonscripterLabel::texecCommand(const pstring& cmd)
+ {
+     int j;
++#ifdef __EMSCRIPTEN__
++    web_text_event(WEB_TEXT_GO);
++#endif
+     if (textgosub_clickstr_state == CLICK_NEWPAGE) {
+         newPage(true);
+         clickstr_state = CLICK_NONE;
+@@ -281,6 +290,9 @@ int PonscripterLabel::texecCommand(const pstring& cmd)
+             }
+             if (current_read_language == current_language || current_read_language == -1) {
+                 sentence_font.newLine();
++#ifdef __EMSCRIPTEN__
++                web_text_event(WEB_TEXT_NEWLINE);
++#endif
+             }
+         }
+     }
+@@ -1253,6 +1265,9 @@ int PonscripterLabel::puttextCommand(const pstring& cmd)
+                 }
+             }
+             sentence_font.newLine();
++#ifdef __EMSCRIPTEN__
++            web_text_event(WEB_TEXT_NEWLINE);
++#endif
+         }
+     }
+     if (ret != RET_CONTINUE) {
+@@ -1902,7 +1917,16 @@ int PonscripterLabel::logspCommand(const pstring& cmd)
+     si.is_tight_region = false;
+     si.skip_whitespace = false;
+     sentence_font.is_newline_accepted = true;
++#ifdef __EMSCRIPTEN__
++    web_set_log_sprite(sprite_no);
++    web_text_event(WEB_TEXT_LOG_BEGIN);
++    web_report_glyphs(true);
++#endif
+     setupAnimationInfo(&si, NULL);
++#ifdef __EMSCRIPTEN__
++    web_report_glyphs(false);
++    web_text_event(WEB_TEXT_LOG_END);
++#endif
+     sentence_font.is_newline_accepted = false;
+     si.visible(true);
+     dirty_rect.add(si.pos);
+@@ -3315,6 +3339,9 @@ int PonscripterLabel::brCommand(const pstring& cmd)
+     ns = sentence_font.base_size() * delta / 100;
+     sentence_font.set_mod_size(ns);
+     sentence_font.newLine();
++#ifdef __EMSCRIPTEN__
++    web_text_event(WEB_TEXT_NEWLINE);
++#endif
+     sentence_font.set_mod_size(cs);
+ 
+     int ignored;
 diff --git a/src/PonscripterLabel_event.cpp b/src/PonscripterLabel_event.cpp
-index f509bc2..ad5ada3 100644
+index f509bc2..524678b 100644
 --- a/src/PonscripterLabel_event.cpp
 +++ b/src/PonscripterLabel_event.cpp
 @@ -30,6 +30,9 @@
@@ -96,7 +366,7 @@ index f509bc2..ad5ada3 100644
  
  #define EDIT_MODE_PREFIX "[EDIT MODE]  "
  #define EDIT_SELECT_STRING "MP3 vol (m)  SE vol (s)  Voice vol (v)  Numeric variable (n)"
-@@ -1191,6 +1194,11 @@ int PonscripterLabel::eventLoop()
+@@ -1191,6 +1194,16 @@ int PonscripterLabel::eventLoop()
      SDL_GetMouseState(&last_mouse_x, &last_mouse_y);
  
      while (SDL_WaitEvent(&event)) {
@@ -104,10 +374,80 @@ index f509bc2..ad5ada3 100644
 +        // Long stretches of script run without ever sleeping; the browser
 +        // still needs the thread back to paint, mix audio and read input.
 +        web_yield_if_due();
++        web_note_text_window((display_mode & TEXT_DISPLAY_MODE) != 0);
++        if (web_take_repaint()) {
++            dirty_rect.fill(screen_width, screen_height);
++            flush(refreshMode());
++        }
 +#endif
          // ignore continous SDL_MOUSEMOTION
          while (event.type == SDL_MOUSEMOTION) {
              if (SDL_PeepEvents(&tmp_event, 1, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) == 0) break;
+diff --git a/src/PonscripterLabel_image.cpp b/src/PonscripterLabel_image.cpp
+index 398119d..72c2907 100644
+--- a/src/PonscripterLabel_image.cpp
++++ b/src/PonscripterLabel_image.cpp
+@@ -24,6 +24,9 @@
+  */
+ 
+ #include "PonscripterLabel.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++#endif
+ #include <cstdio>
+ 
+ #include "graphics_common.h"
+@@ -435,6 +438,10 @@ void
+ PonscripterLabel::refreshSurface(SDL_Surface* surface, SDL_Rect* clip_src,
+ 				 int refresh_mode)
+ {
++#ifdef __EMSCRIPTEN__
++    if (web_text_off_picture())
++        refresh_mode &= ~(REFRESH_SHADOW_MODE | REFRESH_TEXT_MODE);
++#endif
+     if (refresh_mode == REFRESH_NONE_MODE) return;
+ 
+     SDL_Rect clip = { 0, 0, surface->w, surface->h };
+@@ -450,7 +457,11 @@ PonscripterLabel::refreshSurface(SDL_Surface* surface, SDL_Rect* clip_src,
+             top = z_order;
+     
+         for (i = MAX_SPRITE_NUM - 1; i > top; --i) {
+-            if (sprite_info[i].image_surface && sprite_info[i].showing())
++            if (sprite_info[i].image_surface && sprite_info[i].showing()
++#ifdef __EMSCRIPTEN__
++                && !web_sprite_off_picture(i)
++#endif
++                )
+                 drawTaggedSurface(surface, &sprite_info[i], clip);
+         }
+     }
+@@ -485,7 +496,11 @@ PonscripterLabel::refreshSurface(SDL_Surface* surface, SDL_Rect* clip_src,
+         else
+             top = 0;
+         for (i = z_order; i >= top; --i) {
+-            if (sprite_info[i].image_surface && sprite_info[i].showing())
++            if (sprite_info[i].image_surface && sprite_info[i].showing()
++#ifdef __EMSCRIPTEN__
++                && !web_sprite_off_picture(i)
++#endif
++                )
+                 drawTaggedSurface(surface, &sprite_info[i], clip);
+         }
+     }
+@@ -527,7 +542,12 @@ PonscripterLabel::refreshSurface(SDL_Surface* surface, SDL_Rect* clip_src,
+     }
+ 
+     for (ButtonElt::iterator it = buttons.begin(); it != buttons.end(); ++it)
+-        if (it->second.show_flag > 0)
++        if (it->second.show_flag > 0
++#ifdef __EMSCRIPTEN__
++            && !(web_text_off_picture() && it->second.isTmpSprite() && it->second.anim[0]
++                 && it->second.anim[0]->trans_mode == AnimationInfo::TRANS_STRING)
++#endif
++            )
+             drawTaggedSurface(surface, it->second.anim[it->second.show_flag - 1], clip);
+ }
+ 
 diff --git a/src/PonscripterLabel_sound.cpp b/src/PonscripterLabel_sound.cpp
 index d43c179..6731576 100644
 --- a/src/PonscripterLabel_sound.cpp
@@ -164,6 +504,100 @@ index d43c179..6731576 100644
  #ifndef MP3_MAD
      bool different_spec = false;
      pstring mpeg_dat = ScriptHandler::cBR->getFile(filename);
+diff --git a/src/PonscripterLabel_text.cpp b/src/PonscripterLabel_text.cpp
+index 2c77ce2..6b65c06 100644
+--- a/src/PonscripterLabel_text.cpp
++++ b/src/PonscripterLabel_text.cpp
+@@ -24,6 +24,13 @@
+  */
+ 
+ #include "PonscripterLabel.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++// Set while a whole page is drawn somewhere else than on the text layer as
++// it is read: restoreTextBuffer() (off-screen), logsp (a backlog sprite).
++static bool web_restoring_text = false;
++void web_report_glyphs(bool on) { web_restoring_text = on; }
++#endif
+ 
+ Glyph
+ PonscripterLabel::renderGlyph(Font* font, Uint16 text, int size,
+@@ -104,6 +111,13 @@ PonscripterLabel::drawChar(const char* text, Fontinfo* info, bool flush_flag,
+ {
+     int bytes;
+     wchar unicode = file_encoding->DecodeWithLigatures(text, *info, bytes);
++#ifdef __EMSCRIPTEN__
++    // Text read under the picture: only the text layer gets the glyph (for
++    // when the picture shows the text again), not the picture itself.
++    const bool web_report = web_restoring_text ||
++        (lookback_flag && surface == accumulation_surface);
++    if (surface == accumulation_surface && web_text_off_picture()) surface = NULL;
++#endif
+ 
+     bool code = info->processCode(text);
+     bool hidden_language = (current_read_language != -1 && current_read_language != current_language);
+@@ -134,6 +148,11 @@ PonscripterLabel::drawChar(const char* text, Fontinfo* info, bool flush_flag,
+         color.b = info->color.b;    
+         drawGlyph(surface, info, color, unicode, x, y, false, cache_info,
+           clip, dst_rect);
++#ifdef __EMSCRIPTEN__
++        if (web_report)
++            web_text_glyph(unicode, color.r, color.g, color.b, info->style,
++                           info->size(), info->base_size());
++#endif
+ 
+     info->addShadeArea(dst_rect, shade_distance);
+         if (surface == accumulation_surface && !flush_flag
+@@ -233,16 +252,27 @@ void PonscripterLabel::restoreTextBuffer()
+     const wchar first_ch = file_encoding->DecodeWithLigatures(buffer, f_info);
+     if (is_indent_char(first_ch)) f_info.SetIndent(first_ch);
+ 
++#ifdef __EMSCRIPTEN__
++    web_text_event(WEB_TEXT_RESTORE_BEGIN);
++    web_restoring_text = true;
++#endif
+     int i = 0;
+     while (i < buffer_count) {
+         if (buffer[i] == 0x0a) {
+             f_info.newLine();
++#ifdef __EMSCRIPTEN__
++            web_text_event(WEB_TEXT_NEWLINE);
++#endif
+         ++i;
+         }
+         else {
+             i += drawChar(buffer + i, &f_info, false, false, NULL, &text_info);
+         }
+     }
++#ifdef __EMSCRIPTEN__
++    web_restoring_text = false;
++    web_text_event(WEB_TEXT_RESTORE_END);
++#endif
+ }
+ 
+ 
+@@ -369,6 +399,10 @@ int PonscripterLabel::clickWait(bool display_char)
+                      &text_info);
+             ++num_chars_in_sentence;
+         }
++#ifdef __EMSCRIPTEN__
++        if (current_read_language == -1 || current_read_language == current_language)
++            web_text_event(WEB_TEXT_CLICK_WAIT);
++#endif
+         if (textgosub_label) {
+             const char* next_text = c + 1;
+             
+@@ -419,6 +453,10 @@ int PonscripterLabel::clickNewPage(bool display_char)
+     }
+     else {
+         key_pressed_flag = false;
++#ifdef __EMSCRIPTEN__
++        if (current_read_language == -1 || current_read_language == current_language)
++            web_text_event(WEB_TEXT_PAGE_WAIT);
++#endif
+         if (textgosub_label) {
+             saveoffCommand("saveoff");
+ 
 diff --git a/src/ScriptHandler.h b/src/ScriptHandler.h
 index 810504d..c4b4383 100644
 --- a/src/ScriptHandler.h

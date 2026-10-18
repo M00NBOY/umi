@@ -15,6 +15,9 @@
   const frame = $('frame');
   const canvas = $('canvas');
   const touchLayer = $('touch');
+  const reader = $('reader');
+  const readerPage = $('reader-page'); // the text itself, inside the scrolling reader
+  const readerButtons = $('reader-buttons'); // what can be pressed, under the text
   const video = $('video');
   const busy = $('busy');
   const controls = $('controls');
@@ -41,6 +44,8 @@
   const touchDevice = matchMedia('(pointer: coarse)').matches;
   const turnButton = controls.querySelector('[data-action="turn"]');
   let turned = false; // the reader's choice, kept from one visit to the next
+  let textBelow = false; // the text is shown under the picture, not on it
+  const waitIcons = {}; // 1, 2 -> the game's click-wait icons, from the script
   try {
     turned = localStorage.getItem('umineko.turned') === '1';
   } catch (err) { /* private browsing */ }
@@ -63,13 +68,23 @@
     stage.style.width = rotated ? `${innerHeight}px` : '';
     stage.style.height = rotated ? `${innerWidth}px` : '';
     stage.style.transform = rotated ? `translateX(${innerWidth}px) rotate(90deg)` : '';
-    touchLayer.hidden = !rotated;
+    touchLayer.hidden = !touchDevice;
+    // Read sideways, the buttons stay out of the way until asked for.
+    const autoHide = touchDevice && !(portrait && !rotated);
+    document.body.classList.toggle('autohide', autoHide);
+    if (!autoHide) showControls(false);
     const style = getComputedStyle(stage);
     let width = stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     let height = stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
-    if (!controls.hidden && touchDevice) {
+    if (!controls.hidden && touchDevice && !autoHide) {
       if (portrait && !rotated) height -= controls.offsetHeight;
       else width -= controls.offsetWidth;
+    }
+    if (portrait && !rotated) height *= 0.6; // the rest for the text in large print
+    textBelow = portrait && !rotated;
+    if (Module) {
+      Module._web_set_text_off_picture(textBelow ? 1 : 0,
+        waitIcons[1] ? waitIcons[1].sprite : -1, waitIcons[2] ? waitIcons[2].sprite : -1);
     }
     const gameWidth = canvas.width || 4;
     const gameHeight = canvas.height || 3;
@@ -77,6 +92,22 @@
     frame.style.width = `${Math.floor(gameWidth * scale)}px`;
     frame.style.height = `${Math.floor(gameHeight * scale)}px`;
   }
+
+  // Sideways, a tap beside the picture shows the buttons for a few seconds.
+  const CONTROLS_SHOWN_MS = 5000;
+  let controlsTimer = 0;
+
+  function showControls(on) {
+    clearTimeout(controlsTimer);
+    document.body.classList.toggle('controls-shown', on);
+    if (on) controlsTimer = setTimeout(() => showControls(false), CONTROLS_SHOWN_MS);
+  }
+
+  stage.addEventListener('click', (event) => {
+    if (!document.body.classList.contains('autohide')) return;
+    if (controls.contains(event.target)) showControls(true); // in use: keep them
+    else if (!frame.contains(event.target)) showControls(!document.body.classList.contains('controls-shown'));
+  });
 
   addEventListener('resize', layout);
   addEventListener('orientationchange', layout);
@@ -224,6 +255,22 @@
     for (const m of text.matchAll(/if\s+%(bgm|se|me)\w*\s*=\s*(\d+)\s+mov\s+\$\w+\s*,\s*"([^"\n]+)"/gi)) {
       soundTables[m[1].toLowerCase()].set(Number(m[2]), toKey(m[3]));
     }
+    // The icons the game shows while it waits for a click (1) or to turn the
+    // page (2): sprites, set up as lsph TextCC1SpNum,":bl/3,160,2;bmp\cursor0.png".
+    const spriteNumbers = new Map();
+    for (const m of text.matchAll(/^\s*numalias\s+TextCC([12])SpNum\s*,\s*(\d+)/gim)) spriteNumbers.set(m[1], Number(m[2]));
+    for (const m of text.matchAll(/\blsph?\s+TextCC([12])SpNum\s*,\s*"([^"\n]+)"/gi)) {
+      if (waitIcons[m[1]] || !spriteNumbers.has(m[1])) continue;
+      const tag = /^:([^/;]*)(?:\/(\d+),(\d+),(\d+))?;(.+)$/.exec(m[2]);
+      if (!tag) continue;
+      waitIcons[m[1]] = {
+        sprite: spriteNumbers.get(m[1]),
+        key: toKey(tag[5]),
+        cells: Number(tag[2] || 1),
+        ms: Number(tag[3] || 0),
+        loop: Number(tag[4] || 0), // 0 round, 1 once, 2 back and forth, 3 still
+      };
+    }
     const masks = new Set();
     for (const m of text.matchAll(/^\s*effect\s+\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*"([^"\n]+)"/gim)) {
       masks.add(toKey(m[1]));
@@ -363,6 +410,32 @@
 
   // ---------------------------------------------------------------- movies
 
+  const videoHint = $('video-hint');
+
+  // A tap anywhere but on the movie gives it its sound, which a phone only
+  // allows in answer to a touch.
+  function soundForMovie(event) {
+    if (!moviePlaying || !video.muted || event.target === video) return;
+    video.muted = false;
+    video.play().catch(() => { video.muted = true; });
+    videoHint.hidden = true;
+  }
+  addEventListener('touchend', soundForMovie, true);
+  addEventListener('click', soundForMovie, true);
+
+  /**
+   * Phones let a media element play with sound once it has been played in
+   * answer to a touch: done for the movie element on the Start button, so
+   * that the game's movies, started by the engine, keep their sound.
+   */
+  function unlockMovieSound() {
+    try {
+      video.load();
+      const playing = video.play();
+      if (playing) playing.then(() => video.pause(), () => {});
+    } catch (err) { /* nothing to unlock */ }
+  }
+
   function ponsPlayVideo(key, skippable) {
     const name = key.split('/').pop().replace(/\.[^.]+$/, '').toLowerCase();
     debug('video', key, skippable);
@@ -376,7 +449,10 @@
         video.load();
         video.hidden = true;
         video.onended = video.onerror = video.onclick = null;
+        videoHint.hidden = true;
         removeEventListener('keyup', onKey, true);
+        moviePlaying = false;
+        updateReaderShown();
         resolve();
       };
       const onKey = (event) => {
@@ -388,17 +464,397 @@
       addEventListener('keyup', onKey, true);
       Promise.resolve(source.movieUrl(name)).then((url) => {
         if (!url) return finish(); // no version of it this browser can play
+        moviePlaying = true;
+        updateReaderShown();
         video.muted = false;
         video.src = url;
         video.hidden = false;
         video.play().catch(() => {
-          // Sound was refused without a fresh tap: play silently instead.
+          // Sound was refused without a fresh tap: play silently instead,
+          // until a tap beside the picture (one on it skips the movie).
           video.muted = true;
-          video.play().catch(finish);
+          video.play().then(() => { videoHint.hidden = false; }, finish);
         });
       }, finish);
     });
   }
+
+  // ----------------------------------------------------------- large print
+  //
+  // Held upright, a phone shows the picture too small to read its text, so
+  // the text is shown again under it, in the game's own fonts and colours.
+  // The engine reports each glyph as it draws it (web_platform.h); a page it
+  // redraws from its buffer (after the menu, in the backlog) has lost its
+  // colours there, so pages already seen are put back as they were shown.
+
+  const fontFamilies = new Map(); // style -> CSS family of the face it is drawn with
+  const loadedFonts = new Set();
+  const pagesSeen = new Map(); // text without spaces -> HTML, most recent last
+  let run = null;       // { node, key } the text node being written to
+  let restoring = null; // the page the engine is redrawing, collected aside
+  let stickToEnd = true;
+
+  function fontFamily(style) {
+    let family = fontFamilies.get(style);
+    if (family !== undefined) return family;
+    const address = Module._web_font_file(style);
+    const key = address ? toKey(Module.UTF8ToString(address)) : '';
+    family = key ? `pons-${key.replace(/[^a-z0-9]/g, '-')}` : '';
+    fontFamilies.set(style, family);
+    if (family && !loadedFonts.has(family) && window.FontFace) {
+      loadedFonts.add(family);
+      load(key).then((bytes) => {
+        if (!bytes) return;
+        const face = new FontFace(family, bytes);
+        document.fonts.add(face);
+        return face.load();
+      }).catch((err) => debug('font', key, err));
+    }
+    return family;
+  }
+
+  const readerText = (node) => node.textContent.replace(/\s+/g, '');
+
+  // ------- the icon that says the game waits for a click, as in the game
+
+  let waitIcon = null;
+  let waitTimer = 0;
+  let waitingFor = 0; // the kind of click the game waits for, 0 if none
+  const iconUrls = new Map(); // key -> Promise<object URL>
+
+  function iconUrl(key) {
+    let url = iconUrls.get(key);
+    if (!url) {
+      url = load(key).then((bytes) => (bytes ? URL.createObjectURL(new Blob([bytes], { type: 'image/png' })) : null));
+      iconUrls.set(key, url);
+    }
+    return url;
+  }
+
+  function hideWaitIcon() {
+    clearInterval(waitTimer);
+    if (waitIcon) waitIcon.remove();
+    waitIcon = null;
+  }
+
+  function showWaitIcon(kind) {
+    hideWaitIcon();
+    const icon = waitIcons[kind];
+    if (!icon) return;
+    const span = document.createElement('span');
+    span.className = 'wait-icon';
+    span.style.backgroundSize = `${icon.cells * 100}% 100%`;
+    waitIcon = span;
+    readerPage.append(span);
+    scrollReader();
+    iconUrl(icon.key).then((url) => {
+      if (url && waitIcon === span) span.style.backgroundImage = `url(${url})`;
+    });
+    if (icon.cells < 2 || !icon.ms || icon.loop === 3) return;
+    // Cells side by side, shown in turn the way the engine animates sprites.
+    let cell = 0;
+    let step = 1;
+    waitTimer = setInterval(() => {
+      if (cell + step >= icon.cells || cell + step < 0) {
+        if (icon.loop === 1) return clearInterval(waitTimer);
+        if (icon.loop === 2) step = -step;
+        else cell = -1;
+      }
+      cell += step;
+      span.style.backgroundPosition = `${(cell / (icon.cells - 1)) * 100}% 0`;
+    }, icon.ms);
+  }
+
+  function rememberPage() {
+    hideWaitIcon();
+    const text = readerText(readerPage);
+    if (!text) return;
+    pagesSeen.delete(text);
+    pagesSeen.set(text, readerPage.innerHTML);
+    if (pagesSeen.size > 200) pagesSeen.delete(pagesSeen.keys().next().value);
+  }
+
+  function scrollReader() {
+    if (stickToEnd && !restoring) reader.scrollTop = reader.scrollHeight;
+  }
+
+  function ponsTextGlyph(unicode, rgb, style, scale) {
+    if (!restoring) {
+      leaveLog();
+      waitingFor = 0;
+      hideWaitIcon();
+    }
+    const target = restoring || readerPage;
+    const key = `${rgb}/${style}/${scale}`;
+    const char = String.fromCharCode(unicode);
+    if (run && run.key === key && run.node.parentNode && run.node.parentNode.parentNode === target) {
+      run.node.appendData(char);
+    } else {
+      const span = document.createElement('span');
+      span.style.color = `#${rgb.toString(16).padStart(6, '0')}`;
+      const family = fontFamily(style);
+      if (family) span.style.fontFamily = `"${family}", serif`;
+      if (scale !== 1) span.style.fontSize = `${scale}em`;
+      const node = document.createTextNode(char);
+      span.append(node);
+      target.append(span);
+      run = { node, key };
+    }
+    scrollReader();
+  }
+
+  const TEXT_CLEAR = 0;
+  const TEXT_NEWLINE = 1;
+  const TEXT_RESTORE_BEGIN = 2;
+  const TEXT_RESTORE_END = 3;
+  const TEXT_CLICK_WAIT = 4;
+  const TEXT_PAGE_WAIT = 5;
+  const TEXT_GO = 6;
+  const TEXT_LOG_BEGIN = 7;
+  const TEXT_LOG_END = 8;
+  const TEXT_ON = 9;
+  const TEXT_WINDOW_SHOWN = 10;
+  const TEXT_WINDOW_HIDDEN = 11;
+
+  // The text goes when the game takes its text window off the picture (a
+  // scene change, a movie), and comes back with it, as on the picture.
+  let textWindowShown = true;
+  let moviePlaying = false;
+
+  function updateReaderShown() {
+    const shown = (textWindowShown || pageBeforeLog !== null) && !moviePlaying;
+    reader.classList.toggle('away', !shown);
+  }
+
+  // The backlog: the game shows one past page at a time, as a sprite. It is
+  // shown here instead of the page being read, which comes back after.
+  let pageBeforeLog = null; // HTML of the page being read, while in the backlog
+
+  function leaveLog() {
+    if (pageBeforeLog === null) return;
+    readerPage.innerHTML = pageBeforeLog;
+    pageBeforeLog = null;
+    reader.classList.remove('log');
+    updateReaderShown();
+    stickToEnd = true;
+    if (waitingFor) showWaitIcon(waitingFor);
+    scrollReader();
+  }
+
+  function ponsTextEvent(event) {
+    if (event === TEXT_LOG_BEGIN) {
+      if (pageBeforeLog === null) {
+        hideWaitIcon();
+        pageBeforeLog = readerPage.innerHTML;
+      }
+      restoring = document.createElement('div');
+    } else if (event === TEXT_LOG_END && restoring) {
+      // The game keeps its backlog without colours, and shows it in one
+      // (pale yellow): a page seen here gets back its line breaks and its
+      // red and blue, the rest in the backlog's colour.
+      const seen = pagesSeen.get(readerText(restoring));
+      const first = restoring.querySelector('span');
+      if (seen !== undefined && first) {
+        const page = document.createElement('div');
+        page.innerHTML = seen;
+        for (const span of page.querySelectorAll('span')) {
+          if (span.style.color === 'rgb(255, 255, 255)') span.style.color = first.style.color;
+        }
+        readerPage.replaceChildren(...page.childNodes);
+      } else readerPage.replaceChildren(...restoring.childNodes);
+      restoring = null;
+      reader.classList.add('log');
+      updateReaderShown();
+      reader.scrollTop = 0;
+      stickToEnd = false;
+    } else if (event === TEXT_WINDOW_SHOWN || event === TEXT_WINDOW_HIDDEN) {
+      textWindowShown = event === TEXT_WINDOW_SHOWN;
+      updateReaderShown();
+      return;
+    } else if (event === TEXT_ON) {
+      leaveLog();
+    } else if (event === TEXT_CLEAR) {
+      if (restoring) return;
+      leaveLog();
+      waitingFor = 0;
+      rememberPage();
+      readerPage.replaceChildren();
+      fontFamilies.clear(); // the script may have mapped other fonts since
+      stickToEnd = true;
+    } else if (event === TEXT_CLICK_WAIT || event === TEXT_PAGE_WAIT) {
+      waitingFor = event === TEXT_CLICK_WAIT ? 1 : 2;
+      if (!restoring) showWaitIcon(waitingFor);
+      return;
+    } else if (event === TEXT_GO) {
+      waitingFor = 0;
+      hideWaitIcon();
+    } else if (event === TEXT_NEWLINE) {
+      if (!restoring) {
+        waitingFor = 0;
+        hideWaitIcon();
+      }
+      (restoring || readerPage).append('\n');
+      scrollReader();
+    } else if (event === TEXT_RESTORE_BEGIN) {
+      rememberPage();
+      restoring = document.createElement('div');
+    } else if (event === TEXT_RESTORE_END && restoring) {
+      const seen = pagesSeen.get(readerText(restoring));
+      if (seen !== undefined) readerPage.innerHTML = seen;
+      else readerPage.replaceChildren(...restoring.childNodes);
+      restoring = null;
+      stickToEnd = true;
+      if (waitingFor) showWaitIcon(waitingFor); // still waiting, as before the redraw
+      scrollReader();
+    }
+    run = null;
+  }
+
+  reader.addEventListener('scroll', () => {
+    stickToEnd = reader.scrollTop + reader.clientHeight >= reader.scrollHeight - 8;
+  }, { passive: true });
+
+  // A swipe down on the text goes back a page (opening the backlog), a swipe
+  // up forward again (closing it after the last), as the mouse wheel does.
+  // A long page scrolls first.
+  let swipeFrom = null;
+  reader.addEventListener('touchstart', (event) => {
+    const t = event.touches[0];
+    swipeFrom = event.touches.length === 1 ? { x: t.clientX, y: t.clientY, top: reader.scrollTop } : null;
+  }, { passive: true });
+  reader.addEventListener('touchend', (event) => {
+    const t = event.changedTouches[0];
+    if (!swipeFrom || !t || !Module) return;
+    const dx = t.clientX - swipeFrom.x;
+    const dy = t.clientY - swipeFrom.y;
+    const atTop = swipeFrom.top <= 0;
+    const atEnd = swipeFrom.top + reader.clientHeight >= reader.scrollHeight - 2;
+    swipeFrom = null;
+    if (Math.abs(dy) < 40 || Math.abs(dy) < 1.5 * Math.abs(dx)) return;
+    if (dy > 0 && atTop) Module._web_push_wheel(1);
+    else if (dy < 0 && atEnd) Module._web_push_wheel(-1);
+  }, { passive: true });
+
+  // ------------------------------------------------------------- buttons
+  //
+  // Upright, what the game lets the reader press is shown again under the
+  // text, larger: choices made of text (select) as text, in the game's font
+  // and colours (and only there: the engine leaves them off the picture);
+  // buttons drawn as pictures (menus, the backlog's arrows) as a copy of that
+  // part of the picture, kept up to date so the pointer's highlight shows.
+
+  let buttonsKey = '';
+  let crops = []; // [{ canvas, b }] picture buttons, to repaint
+  let choicesOffPicture = false; // the game waits on a choice the picture does not show
+
+  function pressGameButton(b) {
+    const x = Math.round(b.x + b.w / 2);
+    const y = Math.round(b.y + b.h / 2);
+    Module._web_push_pointer(x, y, 0, 0); // the engine takes the button under the pointer
+    setTimeout(() => {
+      Module._web_push_pointer(x, y, SDL_BUTTON_LEFT, 1);
+      Module._web_push_pointer(x, y, SDL_BUTTON_LEFT, 0);
+    }, 60);
+  }
+
+  function paintCrop(canvasEl, b) {
+    const pixels = Module._web_screen_pixels();
+    const pitch = Module._web_screen_pitch();
+    if (!pixels || !pitch) return;
+    const x = Math.max(0, b.x);
+    const y = Math.max(0, b.y);
+    const w = Math.min(b.w, canvas.width - x);
+    const h = Math.min(b.h, canvas.height - y);
+    if (w <= 0 || h <= 0) return;
+    const image = new ImageData(w, h);
+    const out = image.data;
+    const heap = Module.HEAPU8;
+    for (let row = 0; row < h; row++) {
+      let src = pixels + (y + row) * pitch + x * 4;
+      let dst = row * w * 4;
+      for (let col = 0; col < w; col++, src += 4, dst += 4) {
+        out[dst] = heap[src + 2];
+        out[dst + 1] = heap[src + 1];
+        out[dst + 2] = heap[src];
+        out[dst + 3] = 255;
+      }
+    }
+    canvasEl.getContext('2d').putImageData(image, 0, 0);
+  }
+
+  function showButtons() {
+    if (!Module || !textBelow) {
+      if (buttonsKey) {
+        readerButtons.replaceChildren();
+        buttonsKey = '';
+        crops = [];
+      }
+      choicesOffPicture = false;
+      return;
+    }
+    let state;
+    try {
+      state = JSON.parse(Module.UTF8ToString(Module._web_buttons()));
+    } catch (err) {
+      return;
+    }
+    // In the backlog, swipes and a tap do what its arrows do.
+    const list = state.wait && pageBeforeLog === null ? state.buttons : [];
+    list.sort((a, b) => a.y - b.y || a.x - b.x);
+    choicesOffPicture = list.some((b) => b.choice);
+    const key = JSON.stringify(list);
+    if (key !== buttonsKey) {
+      buttonsKey = key;
+      crops = [];
+      readerButtons.replaceChildren(...list.map((b) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        if (b.text !== undefined) {
+          button.className = 'choice';
+          // Columns the game lines up with spaces (a chapter and its date)
+          // stay apart, each on its side.
+          const parts = b.text.trim().split(/ {3,}|\u3000{2,}/);
+          for (const part of parts) {
+            const span = document.createElement('span');
+            span.textContent = part;
+            button.append(span);
+          }
+          button.style.setProperty('--off', `#${b.off.toString(16).padStart(6, '0')}`);
+          button.style.setProperty('--on', `#${b.on.toString(16).padStart(6, '0')}`);
+          const family = fontFamily(b.style);
+          if (family) button.style.fontFamily = `"${family}", serif`;
+        } else {
+          button.className = 'picture';
+          const crop = document.createElement('canvas');
+          crop.width = Math.max(1, Math.min(b.w, canvas.width));
+          crop.height = Math.max(1, Math.min(b.h, canvas.height));
+          button.append(crop);
+          crops.push({ canvas: crop, b });
+        }
+        button.addEventListener('click', (event) => {
+          event.stopPropagation(); // not a tap that reads on
+          pressGameButton(b);
+        });
+        return button;
+      }));
+      if (list.length) {
+        // The first of them in view, below what is left of the text.
+        const top = readerButtons.getBoundingClientRect().top - reader.getBoundingClientRect().top + reader.scrollTop;
+        if (top + readerButtons.offsetHeight > reader.scrollTop + reader.clientHeight) {
+          reader.scrollTop = Math.max(0, top - reader.clientHeight * 0.35);
+        }
+        stickToEnd = false;
+      }
+    }
+    for (const { canvas: crop, b } of crops) paintCrop(crop, b);
+  }
+
+  // A tap on the text reads on, like a tap on the picture.
+  reader.addEventListener('click', () => {
+    // While buttons are offered, only they answer (the backlog closes on a tap).
+    if (readerButtons.childElementCount && pageBeforeLog === null) return;
+    if (Module) tapKey(SDLK.enter);
+  });
 
   // ----------------------------------------------------------------- sound
   //
@@ -424,6 +880,36 @@
   const sdl = () => (Module && Module.SDL2 && Module.SDL2.audio && Module.SDL2.audioContext ? Module.SDL2 : null);
   const soundFlowing = () => performance.now() - lastBuffer < 1000;
 
+  // When the page stops being run (the app left, the phone locked), the
+  // sound card plays the engine's last buffer over and over, a beep, until
+  // the page hears it is hidden, which comes too late on a phone. So the
+  // sound goes through a volume that, with each buffer the engine fills, is
+  // set to drop just after that buffer would have finished: the audio thread
+  // itself silences a buffer that never comes, before it can be repeated.
+  let soundGuard = null; // GainNode between the engine's node and the speakers
+
+  function guardSound(node, context) {
+    const guard = context.createGain();
+    try {
+      node.disconnect();
+    } catch (err) { /* not connected yet */ }
+    node.connect(guard);
+    guard.connect(context.destination);
+    soundGuard = guard;
+  }
+
+  function holdGuardOpen(seconds) {
+    const guard = soundGuard;
+    if (!guard || soundAway) return;
+    const now = guard.context.currentTime;
+    const gain = guard.gain;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(1, now);
+    // Room for the double buffering and a late call, then a short fade.
+    gain.setValueAtTime(1, now + 3 * seconds);
+    gain.linearRampToValueAtTime(0, now + 3 * seconds + 0.02);
+  }
+
   /** Notes every buffer request made to the engine. */
   function watchSound(node) {
     if (!node || node.ponsWatched) return;
@@ -432,8 +918,10 @@
       lastBuffer = performance.now();
       outputChannels = event.outputBuffer.numberOfChannels;
       feed(event);
+      holdGuardOpen(event.outputBuffer.duration);
     };
     node.ponsWatched = true;
+    guardSound(node, node.context);
   }
 
   function replaceSoundNode(context) {
@@ -446,7 +934,7 @@
     try {
       old.disconnect();
     } catch (err) { /* already gone with its context */ }
-    node.connect(context.destination);
+    guardSound(node, context);
     SDL2.audio.scriptProcessorNode = node;
   }
 
@@ -505,18 +993,66 @@
   }
 
   // A hidden page is no longer run often enough to feed the sound card, which
-  // then repeats its last buffer as a loud buzz: silence it while away.
-  function restSound() {
+  // then repeats what it was last given as a loud buzz or beep: silence it
+  // while away. On a phone the sound is played by another process, from a
+  // small reserve the page fills, and the page can be frozen at any moment
+  // once hidden: stopping the sound there and then would leave the last
+  // music in that reserve, to be repeated. So the volume drops first, the
+  // reserve fills with silence, and only then does the sound stop.
+  let soundAway = false;
+  let restTimer = 0;
+
+  function restSound(event) {
     const SDL2 = sdl();
     if (!SDL2) return;
-    if (document.hidden) {
-      soundStale = touchDevice;
-      SDL2.audioContext.suspend().catch(() => {});
-    } else SDL2.audioContext.resume().catch(() => {}); // enough on desktop; phones wait for a touch
+    clearTimeout(restTimer);
+    const type = event ? event.type : '';
+    const hidden = document.hidden || type === 'pagehide';
+    if (hidden || type === 'blur') {
+      soundAway = true;
+      if (hidden) soundStale = touchDevice;
+      if (soundGuard) {
+        const now = soundGuard.context.currentTime;
+        soundGuard.gain.cancelScheduledValues(now);
+        soundGuard.gain.setValueAtTime(0, now);
+      }
+      restTimer = setTimeout(() => SDL2.audioContext.suspend().catch(() => {}), 400);
+    } else {
+      soundAway = false;
+      SDL2.audioContext.resume().catch(() => {}); // enough on desktop; phones wait for a touch
+    }
   }
 
+  // iOS treats a page's sound as "ambient" and, in a Home Screen app, cuts it
+  // off at once when the app is left, with a beep, before the page can fade
+  // it out. Declared as playback (as a music app is), it is let go gently,
+  // but ignores the silent switch ("transient-solo" kept the beep). Telling
+  // the system no media is playing is meant to keep it from showing a player
+  // in the Dynamic Island (under test).
+  if (navigator.audioSession) {
+    try {
+      navigator.audioSession.type = 'playback';
+    } catch (err) { /* left as it is */ }
+  }
+  function noMediaPlaying() {
+    if (!navigator.mediaSession) return;
+    try {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+    } catch (err) { /* not supported */ }
+  }
+  noMediaPlaying();
+  setInterval(noMediaPlaying, 2000);
+
   document.addEventListener('visibilitychange', restSound);
+  addEventListener('pagehide', restSound);
   addEventListener('pageshow', restSound);
+  // An app on the Home Screen hears that it is hidden only once frozen, too
+  // late; it loses the focus earlier, as the reader starts to leave it.
+  if (touchDevice) {
+    addEventListener('blur', restSound);
+    addEventListener('focus', restSound);
+  }
   for (const type of ['pointerdown', 'touchend', 'click', 'keydown']) addEventListener(type, wakeSound, true);
 
   if (params.has('debug')) {
@@ -572,7 +1108,7 @@
 
   // ----------------------------------------------------------------- input
 
-  const SDLK = { a: 97, s: 115 };
+  const SDLK = { enter: 13, a: 97, s: 115 };
   const SDL_BUTTON_RIGHT = 3;
 
   function toggleFullscreen() {
@@ -630,43 +1166,63 @@
 
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
-  // Two fingers anywhere on the picture open the game's menu.
-  canvas.addEventListener('touchstart', (event) => {
-    if (event.touches.length === 2 && Module) actions.menu();
-  }, { passive: true });
-
-  // With the stage turned, the browser's coordinates are a quarter turn away
-  // from the game's, so touches are translated here and handed to the engine.
+  // On a touch screen the page takes the touches on the picture and hands
+  // them to the engine itself: to tell a tap (a click, sent when the finger
+  // lifts) from a swipe (down: the page before, which opens the backlog; up:
+  // the page after, as the mouse wheel), and, with the stage turned, because
+  // the browser's coordinates are a quarter turn away from the game's.
   const SDL_BUTTON_LEFT = 1;
-  let pressedAt = null;
+  let touchFrom = null; // { start, last } in game pixels, while one finger is down
 
   function gamePoint(touch) {
     const box = frame.getBoundingClientRect();
     const along = (value) => Math.min(1, Math.max(0, value));
+    if (document.body.classList.contains('rotated')) {
+      return [
+        Math.round(along((touch.clientY - box.top) / box.height) * (canvas.width - 1)),
+        Math.round(along(1 - (touch.clientX - box.left) / box.width) * (canvas.height - 1)),
+      ];
+    }
     return [
-      Math.round(along((touch.clientY - box.top) / box.height) * (canvas.width - 1)),
-      Math.round(along(1 - (touch.clientX - box.left) / box.width) * (canvas.height - 1)),
+      Math.round(along((touch.clientX - box.left) / box.width) * (canvas.width - 1)),
+      Math.round(along((touch.clientY - box.top) / box.height) * (canvas.height - 1)),
     ];
   }
 
-  function onTurnedTouch(event) {
+  function onPictureTouch(event) {
     event.preventDefault();
     if (!Module) return;
-    if (event.type === 'touchstart' && event.touches.length === 2) return actions.menu();
+    if (event.type === 'touchstart' && event.touches.length > 1) {
+      touchFrom = null;
+      if (event.touches.length === 2) actions.menu();
+      return;
+    }
     const touch = event.touches[0];
     if (touch) {
-      const [x, y] = gamePoint(touch);
-      Module._web_push_pointer(x, y, 0, 0);
-      if (!pressedAt) Module._web_push_pointer(x, y, SDL_BUTTON_LEFT, 1);
-      pressedAt = [x, y];
-    } else if (pressedAt) {
-      Module._web_push_pointer(pressedAt[0], pressedAt[1], SDL_BUTTON_LEFT, 0);
-      pressedAt = null;
+      const point = gamePoint(touch);
+      Module._web_push_pointer(point[0], point[1], 0, 0);
+      if (event.type === 'touchstart') touchFrom = { start: point, last: point };
+      else if (touchFrom) touchFrom.last = point;
+      return;
+    }
+    if (!touchFrom || event.type === 'touchcancel') {
+      touchFrom = null;
+      return;
+    }
+    const { start, last } = touchFrom;
+    touchFrom = null;
+    const dx = last[0] - start[0];
+    const dy = last[1] - start[1];
+    if (Math.abs(dy) > canvas.height * 0.08 && Math.abs(dy) > 1.5 * Math.abs(dx)) {
+      Module._web_push_wheel(dy > 0 ? 1 : -1);
+    } else if (!choicesOffPicture) { // the choices are under the text, not here
+      Module._web_push_pointer(start[0], start[1], SDL_BUTTON_LEFT, 1);
+      Module._web_push_pointer(start[0], start[1], SDL_BUTTON_LEFT, 0);
     }
   }
 
   for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
-    touchLayer.addEventListener(type, onTurnedTouch, { passive: false });
+    touchLayer.addEventListener(type, onPictureTouch, { passive: false });
   }
 
   // iPhones cannot put a page in full screen: do not offer it there.
@@ -702,11 +1258,13 @@
       ponsCached,
       ponsFetch,
       ponsPlayVideo,
+      ponsTextGlyph,
+      ponsTextEvent,
       onAbort: (reason) => fail(`The engine stopped: ${reason}`),
       onExit: () => { location.href = './'; },
     });
 
-    if (params.has('debug')) window.ponscripter = { Module, ponsPlayVideo, actions, stats, cache, soundFlowing };
+    if (params.has('debug')) window.ponscripter = { Module, ponsPlayVideo, actions, stats, cache, soundFlowing, soundGuard: () => soundGuard };
 
     const FS = Module.FS;
     FS.mkdirTree(SAVE_DIR);
@@ -724,11 +1282,12 @@
 
     boot.hidden = true;
     controls.hidden = false;
-    layout();
+    layout(); // also hands the engine textBelow
     canvas.focus();
 
     setInterval(syncSaves, 250);
     if (!params.has('nolookahead')) setInterval(lookAhead, 200);
+    setInterval(showButtons, 250);
     setInterval(() => { if (sdl()) watchSound(sdl().audio.scriptProcessorNode); }, 1000);
     addEventListener('pagehide', syncSaves);
     document.addEventListener('visibilitychange', () => { if (document.hidden) syncSaves(); });
@@ -757,7 +1316,10 @@
   addEventListener('error', (event) => onUncaught(event.error || event.message));
   addEventListener('unhandledrejection', (event) => onUncaught(event.reason));
 
-  startButton.addEventListener('click', () => start().catch(fail));
+  startButton.addEventListener('click', () => {
+    unlockMovieSound();
+    start().catch(fail);
+  });
   preload = loadEverything();
   preload.then(() => {
     bootStatus.textContent = 'Ready.';

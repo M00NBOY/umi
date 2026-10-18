@@ -252,3 +252,115 @@ body.rotated #turn-hint { display: block; }
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* ---------------------------------------------------------- large print */
+
+/* The text again, under the picture, when a phone is held upright (shell.js). */
+#reader { display: none; }
+
+body.portrait #reader {
+  display: block;
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 14px 18px;
+  background: #000;
+  color: #fff;
+  font-family: Georgia, serif;
+  font-size: clamp(17px, 4.9vw, 26px);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  cursor: pointer;
+}
+
+/* The game's click-wait icon (an arrow, or a page), at the end of the text. */
+.wait-icon {
+  display: inline-block;
+  width: 0.95em;
+  height: 0.95em;
+  margin-left: 0.3em;
+  vertical-align: -0.12em;
+  background-repeat: no-repeat;
+  background-position: 0 0;
+}
+
+/* A backlog page in the large print. */
+#reader.log { background: #0d0c12; box-shadow: inset 0 0 0 1px var(--line); }
+#reader.log::before {
+  content: "Log · swipe down: earlier · up: later · tap: back to the story";
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font: 12px system-ui, sans-serif;
+  letter-spacing: 0.04em;
+}
+
+/* Read sideways on a phone, the buttons float over the side of the screen,
+   hidden until a tap beside the picture (shell.js). */
+body.autohide #controls {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: max(4px, env(safe-area-inset-right));
+  z-index: 5;
+  transition: opacity 0.2s;
+}
+
+body.autohide.rotated #controls { right: 4px; }
+body.autohide:not(.controls-shown) #controls { opacity: 0; pointer-events: none; }
+
+/* The game has taken its text window away: so goes the large print. */
+#reader.away #reader-page { visibility: hidden; }
+
+/* What can be pressed, under the large print (shell.js, "buttons"). */
+#reader-buttons { display: flex; flex-direction: column; gap: 10px; }
+#reader-buttons:not(:empty) { margin-top: 18px; }
+
+#reader-buttons button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b0a0d;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* A choice: the game's words in its colours, the "on" one while pressed. */
+#reader-buttons .choice {
+  padding: 12px 16px;
+  color: var(--off);
+  font-size: 1em;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+}
+
+#reader-buttons .choice:active { color: var(--on); border-color: var(--on); }
+
+#reader-buttons .picture { padding: 4px; line-height: 0; }
+#reader-buttons .picture:active { border-color: var(--gold); }
+#reader-buttons .picture canvas { max-width: 100%; height: auto; }
+#reader-buttons .choice { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 1em; }
+
+
+/* A movie that had to start without sound says how to get it. */
+#video-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--text);
+  font: 12px system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}

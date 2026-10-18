@@ -1,6 +1,7 @@
 /* Browser glue for the Emscripten build of Ponscripter; see web_platform.h. */
 #include "web_platform.h"
 #include "ScriptHandler.h"
+#include "Fontinfo.h"
 
 #include <SDL.h>
 #include <bzlib.h>
@@ -27,6 +28,31 @@ static int web_js_fetch(const char* key, int length, unsigned char* dst)
 {
     int got = web_js_cached(key, length, dst);
     return got == -2 ? web_js_fetch_async(key, length, dst) : got;
+}
+
+EM_JS(void, web_js_text_glyph, (int unicode, int r, int g, int b, int style,
+                                int size, int base_size), {
+    if (Module.ponsTextGlyph) Module.ponsTextGlyph(unicode, (r << 16) | (g << 8) | b, style, size / base_size);
+});
+
+EM_JS(void, web_js_text_event, (int event), {
+    if (Module.ponsTextEvent) Module.ponsTextEvent(event);
+});
+
+void web_text_glyph(unsigned short unicode, int r, int g, int b, int style,
+                    int size, int base_size)
+{
+    web_js_text_glyph(unicode, r, g, b, style, size, base_size ? base_size : size);
+}
+
+void web_text_event(int event) { web_js_text_event(event); }
+
+void web_note_text_window(bool shown)
+{
+    static int last = -1;
+    if (last == (int) shown) return;
+    last = shown;
+    web_js_text_event(shown ? WEB_TEXT_WINDOW_SHOWN : WEB_TEXT_WINDOW_HIDDEN);
 }
 
 EM_ASYNC_JS(void, web_js_play_video, (const char* key, int click_flag), {
@@ -158,6 +184,40 @@ void web_play_video(const pstring& filename, bool click_flag)
 }
 
 
+static bool text_off_picture = false;
+static int sprites_off_picture[2] = { -1, -1 };
+static bool repaint_pending = false;
+static int log_sprite = -1;
+
+void web_set_log_sprite(int sprite_no) { log_sprite = sprite_no; }
+
+bool web_text_off_picture() { return text_off_picture; }
+
+bool web_sprite_off_picture(int sprite_no)
+{
+    return text_off_picture &&
+        (sprite_no == sprites_off_picture[0] || sprite_no == sprites_off_picture[1] ||
+         sprite_no == log_sprite);
+}
+
+bool web_take_repaint()
+{
+    bool pending = repaint_pending;
+    repaint_pending = false;
+    return pending;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void web_set_text_off_picture(int off, int sprite1, int sprite2)
+{
+    if (text_off_picture == !!off && sprites_off_picture[0] == sprite1 &&
+        sprites_off_picture[1] == sprite2) return;
+    text_off_picture = !!off;
+    sprites_off_picture[0] = sprite1;
+    sprites_off_picture[1] = sprite2;
+    repaint_pending = true;
+}
+
+
 static ScriptHandler* web_script = NULL;
 static const char* web_text_position = NULL;
 
@@ -191,6 +251,11 @@ EMSCRIPTEN_KEEPALIVE char* web_name_buffer() { return web_name; }
 
 /* Resolves the lower-cased name in web_name_buffer(): the current value of
  * the string variable $name, or the string alias `name`. NULL if unknown. */
+EMSCRIPTEN_KEEPALIVE const char* web_font_file(int style)
+{
+    return FontFileName(style);
+}
+
 EMSCRIPTEN_KEEPALIVE const char* web_resolve(int variable)
 {
     if (!web_script) return NULL;
