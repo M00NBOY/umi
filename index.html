@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0a0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Umineko">
+<link rel="manifest" href="app.webmanifest">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<title>Umineko</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="library.css">
+</head>
+<body>
+<main class="launcher library">
+  <h1>Umineko When They Cry</h1>
+
+  <p class="warning" id="unsupported" hidden>This browser cannot keep a game on the device. Use a recent Safari, Chrome, Edge or Firefox.</p>
+  <p class="warning" id="ios-install" hidden>On iPhone and iPad, first add this page to the Home Screen: tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Then open Umineko from the Home Screen and import the game there. A game imported in Safari stays in Safari, and Safari deletes it after a few weeks without a visit.</p>
+
+  <div class="games" id="games"></div>
+
+  <section class="panel" id="import">
+    <h2>Add a game</h2>
+    <p>You need the game files from your own copy of the game (Steam). They are copied into this browser, on this device only: nothing is sent anywhere.</p>
+    <div class="actions">
+      <label class="button primary">Choose a zip<input type="file" id="pick-zip" accept=".zip,application/zip"></label>
+      <label class="button" id="folder-button">Choose the game folder<input type="file" id="pick-folder" webkitdirectory multiple></label>
+    </div>
+    <div id="progress" hidden>
+      <p id="progress-stage"></p>
+      <progress id="progress-bar" max="1" value="0"></progress>
+      <p id="progress-detail"></p>
+    </div>
+    <p class="result" id="import-result" hidden></p>
+    <details>
+      <summary>Where are the game files?</summary>
+      <ol>
+        <li>In Steam, right-click the game, then <strong>Manage</strong> → <strong>Browse local files</strong>. The folder that opens is the game folder (it holds <code>arc.nsa</code> and <code>0.utf</code>).</li>
+        <li id="help-folder">On a computer: <strong>Choose the game folder</strong> above and pick that folder.</li>
+        <li>For a phone or tablet, make a zip of that folder on the computer: right-click it, then <strong>Compress</strong> (Mac) or <strong>Send to</strong> → <strong>Compressed (zipped) folder</strong> (Windows). Put the zip on iCloud Drive or Google Drive, or send it to the phone with AirDrop, then <strong>Choose a zip</strong> above.</li>
+        <li>Once the game is imported, the zip can be deleted to get the room back.</li>
+      </ol>
+      <p>The Question Arcs need about 2.7 GB free, the Answer Arcs about 4 GB, plus room for the zip while importing.</p>
+    </details>
+  </section>
+
+  <p class="note" id="storage"></p>
+  <p class="note">Runs the game's own engine, <a href="source/README.txt">Ponscripter</a> (GPL), in the browser. Umineko When They Cry is by 07th Expansion; this page contains none of it.</p>
+</main>
+<script src="store.js"></script>
+<script src="library.js"></script>
+</body>
+</html>

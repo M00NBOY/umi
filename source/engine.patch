@@ -1,0 +1,240 @@
+diff --git a/src/Fontinfo.cpp b/src/Fontinfo.cpp
+index b923284..8bb7d72 100644
+--- a/src/Fontinfo.cpp
++++ b/src/Fontinfo.cpp
+@@ -109,7 +109,9 @@ Font* FontsStruct::font(int style)
+     FILE* fp = NULL;
+     int n=0;
+ 
+-    while ((fp == NULL) && (n<path->get_num_paths())) {
++    // Stop at the first path that yields the font: the archive branch below
++    // leaves fp unset, and would otherwise load the same file once per path.
++    while ((fp == NULL) && !font_[style] && (n<path->get_num_paths())) {
+         pstring curpath = path->get_path(n++);
+ 
+         pstring fpath = curpath + mapping[style];
+diff --git a/src/PonscripterLabel.cpp b/src/PonscripterLabel.cpp
+index bb7e0a1..4c45970 100644
+--- a/src/PonscripterLabel.cpp
++++ b/src/PonscripterLabel.cpp
+@@ -26,6 +26,9 @@
+ #include "PonscripterLabel.h"
+ #include "PonscripterMessage.h"
+ #include "resources.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++#endif
+ #include <ctype.h>
+ 
+ #ifdef MACOSX
+@@ -49,7 +52,11 @@ typedef HRESULT (WINAPI * GETFOLDERPATH)(HWND, int, HANDLE, DWORD, LPTSTR);
+ #include <unistd.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#ifdef __EMSCRIPTEN__
++#include <limits.h>
++#else
+ #include <linux/limits.h>
++#endif
+ #include <pwd.h>
+ #endif
+ 
+@@ -445,8 +452,14 @@ void PonscripterLabel::initSDL()
+     screen = SDL_CreateWindow(wm_title_string,
+         SDL_WINDOWPOS_UNDEFINED,
+         SDL_WINDOWPOS_UNDEFINED,
++#ifdef __EMSCRIPTEN__
++        // The canvas keeps the game's resolution; the page scales it with CSS.
++        screen_width, screen_height,
++        0);
++#else
+         dispW, dispH,
+         (fullscreen_mode ? fullscreen_flags : 0) | SDL_WINDOW_RESIZABLE);
++#endif
+ 
+     /* end chronotrig */
+ 
+@@ -1445,7 +1458,16 @@ void PonscripterLabel::flush(int refresh_mode, SDL_Rect* rect, bool clear_dirty_
+                     flushDirect(dirty_rect.history[i], refresh_mode, false);
+                 }
+ 
+-                flushDirect(*rect, refresh_mode);
++                // rect is NULL when the caller only wants the dirty area
++                // flushed; dereferencing it let optimising compilers turn
++                // the loop above into an endless one.
++                if (rect) {
++                    flushDirect(*rect, refresh_mode);
++                }
++                else {
++                    SDL_Rect whole = { 0, 0, screen_width, screen_height };
++                    flushDirect(whole, refresh_mode);
++                }
+             }
+         }
+     }
+@@ -1743,6 +1765,9 @@ int PonscripterLabel::parseLine()
+     /* Text */
+     if (current_mode == DEFINE_MODE)
+         errorAndExit("text cannot be displayed in define section.");
++#ifdef __EMSCRIPTEN__
++    web_note_text(script_h.getCurrent());
++#endif
+ 
+ //--------INDENT ROUTINE--------------------------------------------------------
+     if (sentence_font.GetXOffset() == 0 && sentence_font.GetYOffset() == 0) {
+diff --git a/src/PonscripterLabel_event.cpp b/src/PonscripterLabel_event.cpp
+index f509bc2..ad5ada3 100644
+--- a/src/PonscripterLabel_event.cpp
++++ b/src/PonscripterLabel_event.cpp
+@@ -30,6 +30,9 @@
+ #endif
+ 
+ #include "PonscripterUserEvents.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++#endif
+ 
+ #define EDIT_MODE_PREFIX "[EDIT MODE]  "
+ #define EDIT_SELECT_STRING "MP3 vol (m)  SE vol (s)  Voice vol (v)  Numeric variable (n)"
+@@ -1191,6 +1194,11 @@ int PonscripterLabel::eventLoop()
+     SDL_GetMouseState(&last_mouse_x, &last_mouse_y);
+ 
+     while (SDL_WaitEvent(&event)) {
++#ifdef __EMSCRIPTEN__
++        // Long stretches of script run without ever sleeping; the browser
++        // still needs the thread back to paint, mix audio and read input.
++        web_yield_if_due();
++#endif
+         // ignore continous SDL_MOUSEMOTION
+         while (event.type == SDL_MOUSEMOTION) {
+             if (SDL_PeepEvents(&tmp_event, 1, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) == 0) break;
+diff --git a/src/PonscripterLabel_sound.cpp b/src/PonscripterLabel_sound.cpp
+index d43c179..6731576 100644
+--- a/src/PonscripterLabel_sound.cpp
++++ b/src/PonscripterLabel_sound.cpp
+@@ -25,6 +25,9 @@
+ 
+ #include "PonscripterLabel.h"
+ #include "PonscripterUserEvents.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++#endif
+ #ifdef LINUX
+ #include <signal.h>
+ #endif
+@@ -349,6 +352,11 @@ int PonscripterLabel::playOGG(int format, unsigned char* buffer, long length, bo
+         return SOUND_OGG;
+     }
+ 
++#ifndef __EMSCRIPTEN__
++    // Not in a browser: reopening the device there creates a new audio
++    // context, which stays silent until the reader next touches the page
++    // (never, in skip mode) and cuts every sound that was playing.
++    // openOggVorbis() has already set up conversion to the device's format.
+     if ((audio_format.format != AUDIO_S16) ||
+         (audio_format.freq != rate)) {
+         Mix_CloseAudio();
+@@ -365,7 +373,15 @@ int PonscripterLabel::playOGG(int format, unsigned char* buffer, long length, bo
+             ovi->mult2 = (int)(ovi->cvt.len_ratio*10.0);
+        }
+     }
++#endif
+ 
++#ifdef __EMSCRIPTEN__
++    // Resampling here is done buffer by buffer and is audible; the page opens
++    // the device at the music's usual rate so that it is rarely needed.
++    if (ovi->cvt.needed)
++        fprintf(stderr, "music at %d Hz resampled for a %d Hz device\n",
++                rate, audio_format.freq);
++#endif
+     music_struct.ovi = ovi;
+     music_struct.volume = music_volume;
+     music_struct.is_mute = !volume_on_flag;
+@@ -518,6 +534,13 @@ int PonscripterLabel::playMPEG(const pstring& filename, bool click_flag,
+                                SubtitleDefs& subtitles)
+ {
+     int ret = 0;
++#ifdef __EMSCRIPTEN__
++    // The browser decodes the movie itself, as an element laid over the canvas.
++    web_play_video(filename, click_flag);
++    ctrl_pressed_status = 0;
++    queueRerender();
++    return ret;
++#endif
+ #ifndef MP3_MAD
+     bool different_spec = false;
+     pstring mpeg_dat = ScriptHandler::cBR->getFile(filename);
+diff --git a/src/ScriptHandler.h b/src/ScriptHandler.h
+index 810504d..c4b4383 100644
+--- a/src/ScriptHandler.h
++++ b/src/ScriptHandler.h
+@@ -225,6 +225,22 @@ public:
+     void addStrAlias(const pstring& str, const pstring& val)
+ 	{ checkalias(str); str_aliases[str] = val; }
+ 
++#ifdef __EMSCRIPTEN__
++    // Read-only lookups for the browser's asset look-ahead (web_platform).
++    // Alias names are stored lower-cased.
++    const char* webStrAlias(const pstring& name) {
++	stralias_t::iterator a = str_aliases.find(name);
++	return a == str_aliases.end() ? NULL : (const char*) a->second;
++    }
++    const char* webStrVariable(const pstring& name) {
++	numalias_t::iterator a = num_aliases.find(name);
++	if (a == num_aliases.end() || a->second < 0 || a->second >= VARIABLE_RANGE)
++	    return NULL;
++	return (const char*) variable_data[a->second].str;
++    }
++    const char* webScriptEnd() const { return script_buffer + script_buffer_length; }
++#endif
++
+ 
+     class LogInfo {
+ 	typedef set<pstring>::t logged_t;
+diff --git a/src/ScriptParser.cpp b/src/ScriptParser.cpp
+index ddac768..a8ce939 100644
+--- a/src/ScriptParser.cpp
++++ b/src/ScriptParser.cpp
+@@ -24,6 +24,9 @@
+  */
+ 
+ #include "ScriptParser.h"
++#ifdef __EMSCRIPTEN__
++#include "web_platform.h"
++#endif
+ 
+ #ifdef MACOSX
+ namespace Carbon {
+@@ -326,7 +329,12 @@ void ScriptParser::reset()
+ 
+ int ScriptParser::open(const char* preferred_script)
+ {
++#ifdef __EMSCRIPTEN__
++    ScriptHandler::cBR = new WebReader(&archive_path, key_table);
++    web_set_script(&script_h);
++#else
+     ScriptHandler::cBR = new DirectReader(&archive_path, key_table);
++#endif
+     ScriptHandler::cBR->open();
+ 
+     script_h.game_identifier = cmdline_game_id;
+diff --git a/src/ScriptParser_command.cpp b/src/ScriptParser_command.cpp
+index 2cce450..f8caffc 100644
+--- a/src/ScriptParser_command.cpp
++++ b/src/ScriptParser_command.cpp
+@@ -424,10 +424,15 @@ int ScriptParser::nsaCommand(const pstring& cmd)
+         archive_type = NsaReader::ARCHIVE_TYPE_NS3;
+     }
+ 
++#ifdef __EMSCRIPTEN__
++    // The web reader already resolves archive members through its manifest.
++    (void) archive_type;
++#else
+     delete ScriptHandler::cBR;
+     ScriptHandler::cBR = new NsaReader(&archive_path, key_table);
+     if (ScriptHandler::cBR->open(nsa_path, archive_type))
+         fprintf(stderr, " *** failed to open Nsa archive, ignored.  ***\n");
++#endif
+ 
+     return RET_CONTINUE;
+ }

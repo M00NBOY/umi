@@ -1,0 +1,70 @@
+/* Game list of the static site (index.html); the rest is in style.css. */
+
+.library { justify-content: flex-start; padding-top: max(40px, env(safe-area-inset-top)); }
+
+.library h2 { margin: 0 0 10px; font-size: 19px; font-weight: 500; color: var(--gold); }
+
+.library p, .library li { line-height: 1.5; }
+
+.card { display: flex; flex-direction: column; gap: 10px; }
+.card.missing .game { opacity: 0.6; }
+.card.missing .game:hover { border-color: var(--line); background: var(--panel); }
+.game em { display: block; margin-top: 12px; color: var(--gold); font-size: 13px; font-style: normal; }
+
+.tools { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.button, .tools button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.button.primary { border-color: var(--gold); background: var(--gold-soft); font-size: 16px; }
+.button input { display: none; }
+.tools .button, .tools button { min-height: 36px; padding: 6px 12px; font-size: 13px; color: var(--muted); }
+body.busy .button, .tools button:disabled { opacity: 0.5; pointer-events: none; }
+
+.panel {
+  width: min(680px, 100%);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.panel > p { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+#progress { margin-top: 18px; }
+#progress p { margin: 0; font-size: 14px; }
+#progress-detail { color: var(--muted); }
+progress { width: 100%; height: 10px; margin: 8px 0; accent-color: var(--gold); }
+
+.result { margin: 16px 0 0; font-size: 15px; color: var(--gold); }
+.result.error { color: #e0907a; }
+
+details { margin-top: 18px; color: var(--muted); font-size: 14px; }
+summary { color: var(--text); cursor: pointer; }
+details ol { padding-left: 1.3em; }
+details li { margin: 8px 0; }
+details strong { color: var(--text); font-weight: normal; }
+code { font-size: 13px; }
+
+.warning {
+  width: min(680px, 100%);
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  background: var(--gold-soft);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.note a { color: var(--muted); }

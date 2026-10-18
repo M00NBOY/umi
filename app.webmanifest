@@ -1,0 +1,9 @@
+{
+  "name": "Umineko When They Cry",
+  "short_name": "Umineko",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0a0d",
+  "theme_color": "#0b0a0d"
+}
