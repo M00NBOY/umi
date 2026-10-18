@@ -1118,9 +1118,8 @@
     } else {
       const request = root.requestFullscreen || root.webkitRequestFullscreen;
       if (!request) return;
-      Promise.resolve(request.call(root)).then(() => {
-        if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
-      }).catch(() => {});
+      // The phone keeps turning freely: held upright it gets the large print.
+      Promise.resolve(request.call(root)).catch(() => {});
     }
   }
 
