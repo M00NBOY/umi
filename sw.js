@@ -4,7 +4,7 @@
 // back, so a new version shows on the visit after it was published.
 'use strict';
 
-const CACHE = 'umineko-ve969d26da2cd';
+const CACHE = 'umineko-v1122df9e04d7';
 const FILES = [
   './', 'index.html', 'play.html', 'style.css', 'app.webmanifest', 'icon.png',
   'library.js', 'library.css', 'store.js', 'store-worker.js', 'source.js', 'shell.js',

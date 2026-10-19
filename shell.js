@@ -793,6 +793,52 @@
     canvasEl.getContext('2d').putImageData(image, 0, 0);
   }
 
+  /**
+   * The buttons in rows: picture buttons of a height side by side on the
+   * picture (a menu's second column, Save/Load slots) stay side by side, left
+   * to right. Groups apart on the picture (Save/Load's menu and its slots)
+   * stay apart: the leftmost first, each from top to bottom.
+   */
+  function pictureRows(list) {
+    const rows = [];
+    for (const b of list) {
+      const row = b.text === undefined && rows.find((r) => {
+        const a = r[0];
+        const overlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+        return a.text === undefined && overlap >= Math.min(a.h, b.h) / 2
+          && Math.max(a.h, b.h) <= 1.25 * Math.min(a.h, b.h);
+      });
+      if (row) row.push(b);
+      else rows.push([b]);
+    }
+    // Groups: rows whose spans across the picture overlap, merged until none do.
+    let groups = rows.map((row) => ({
+      rows: [row],
+      left: Math.min(...row.map((b) => b.x)),
+      right: Math.max(...row.map((b) => b.x + b.w)),
+    }));
+    for (let merged = true; merged;) {
+      merged = false;
+      for (let i = 0; i < groups.length && !merged; i++) {
+        for (let j = i + 1; j < groups.length && !merged; j++) {
+          const a = groups[i];
+          const b = groups[j];
+          if (Math.min(a.right, b.right) <= Math.max(a.left, b.left)) continue;
+          groups[i] = { rows: [...a.rows, ...b.rows], left: Math.min(a.left, b.left), right: Math.max(a.right, b.right) };
+          groups.splice(j, 1);
+          merged = true;
+        }
+      }
+    }
+    groups.sort((a, b) => a.left - b.left);
+    const out = [];
+    for (const group of groups) {
+      group.rows.sort((a, b) => Math.min(...a.map((x) => x.y)) - Math.min(...b.map((x) => x.y)));
+      for (const row of group.rows) out.push(row.sort((a, b) => a.x - b.x));
+    }
+    return out;
+  }
+
   function showButtons() {
     if (!Module || !textBelow) {
       if (buttonsKey) {
@@ -817,7 +863,7 @@
     if (key !== buttonsKey) {
       buttonsKey = key;
       crops = [];
-      readerButtons.replaceChildren(...list.map((b) => {
+      const makeButton = (b) => {
         const button = document.createElement('button');
         button.type = 'button';
         if (b.text !== undefined) {
@@ -847,6 +893,17 @@
           pressGameButton(b);
         });
         return button;
+      };
+      readerButtons.replaceChildren(...pictureRows(list).map((row) => {
+        if (row.length === 1) return makeButton(row[0]);
+        const line = document.createElement('div');
+        line.className = 'row';
+        for (const b of row) {
+          const button = makeButton(b);
+          button.style.flexGrow = b.w; // as wide as each other as on the picture
+          line.append(button);
+        }
+        return line;
       }));
       if (list.length) {
         // The first of them in view, below what is left of the text.
@@ -1147,9 +1204,13 @@
   function journaledSaves() {
     const out = [];
     try {
-      for (let i = 0; i < localStorage.length; i++) {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
         if (!key.startsWith(JOURNAL)) continue;
+        if (key.endsWith(TMP)) { // kept by an older version: never a save
+          localStorage.removeItem(key);
+          continue;
+        }
         const entry = JSON.parse(localStorage.getItem(key));
         out.push({ name: key.slice(JOURNAL.length), mtime: entry.mtime, bytes: fromBase64(entry.data) });
       }
@@ -1159,22 +1220,33 @@
     return out;
   }
 
-  /** Calls journalSave as the engine closes a file it wrote in the saves folder. */
+  // The engine writes a save to "<name>.tmpfile", then renames it.
+  const TMP = '.tmpfile';
+
+  function onSaveWritten(path) {
+    if (!path.startsWith(`${SAVE_DIR}/`) || path.endsWith(TMP)) return;
+    try {
+      journalSave(path);
+    } catch (err) {
+      debug('save not copied', err);
+    }
+    setTimeout(syncSaves, 0);
+  }
+
+  /** Calls journalSave as a file in the saves folder is written in full. */
   function watchSaveWrites() {
     const FS = Module.FS;
     const close = FS.close;
     FS.close = function (stream) {
       const result = close.apply(this, arguments);
-      const path = stream && stream.path;
       // O_WRONLY or O_RDWR
-      if (path && path.startsWith(`${SAVE_DIR}/`) && (stream.flags & 3)) {
-        try {
-          journalSave(path);
-        } catch (err) {
-          debug('save not copied', err);
-        }
-        setTimeout(syncSaves, 0);
-      }
+      if (stream && stream.path && (stream.flags & 3)) onSaveWritten(stream.path);
+      return result;
+    };
+    const rename = FS.rename;
+    FS.rename = function (from, to) {
+      const result = rename.apply(this, arguments);
+      onSaveWritten(to);
       return result;
     };
   }
@@ -1387,6 +1459,7 @@
     FS.chdir(GAME_DIR);
 
     boot.hidden = true;
+    holdBackOnFirstTap();
     controls.hidden = false;
     layout(); // also hands the engine textBelow
     // Shown for a moment at first, so that a reader who has them hidden
@@ -1425,7 +1498,54 @@
   addEventListener('error', (event) => onUncaught(event.error || event.message));
   addEventListener('unhandledrejection', (event) => onUncaught(event.reason));
 
+  // ----------------------------------------------------------------- leaving
+  //
+  // A back swipe (or Back) would leave the game, and what was read since the
+  // last save with it. An extra history entry takes the first Back; the
+  // reader is then asked, and the entry put back if they stay. It is added
+  // on the first tap or key once the game shows: a browser may skip an entry
+  // added without one, and iOS shows during the swipe the screen as it was
+  // when the entry was added (it was the Start screen when added on Start).
+
+  const quitBox = $('quit');
+  let quitting = false;
+  let holding = false;
+
+  function holdBack() {
+    history.pushState({ umineko: 'playing' }, '');
+    holding = true;
+  }
+
+  function holdBackOnFirstTap() {
+    const arm = () => {
+      if (!holding) holdBack();
+      for (const type of ['pointerdown', 'keydown']) removeEventListener(type, arm, true);
+    };
+    for (const type of ['pointerdown', 'keydown']) addEventListener(type, arm, true);
+  }
+
+  addEventListener('popstate', () => {
+    if (quitting || !holding) return;
+    holdBack();
+    quitBox.hidden = false;
+    $('quit-no').focus();
+  });
+  $('quit-no').addEventListener('click', () => {
+    quitBox.hidden = true;
+    canvas.focus();
+  });
+  $('quit-yes').addEventListener('click', () => {
+    quitting = true;
+    syncSaves();
+    history.go(-2); // back past the entry put back, to the page before the game
+    // Opened on its own (nothing before it): to the game list instead.
+    setTimeout(() => location.replace('./'), 600);
+  });
+
+  let started = false;
   startButton.addEventListener('click', () => {
+    if (started) return;
+    started = true;
     unlockMovieSound();
     start().catch(fail);
   });
