@@ -1102,6 +1102,83 @@
     return out;
   }
 
+  // The store takes a moment to keep a save, and a reader who leaves right
+  // after saving would lose it. So the moment the engine closes a save file,
+  // a copy goes to localStorage, which writes before returning; the copy is
+  // dropped once the store has the save, and put back in it on the next boot.
+  const JOURNAL = `umineko.unkept.${gameId}:`;
+
+  function toBase64(bytes) {
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(text);
+  }
+
+  function fromBase64(text) {
+    const raw = atob(text);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  }
+
+  function journalSave(full) {
+    const FS = Module.FS;
+    const stat = FS.stat(full);
+    const name = full.slice(SAVE_DIR.length + 1);
+    try {
+      localStorage.setItem(JOURNAL + name, JSON.stringify({
+        stamp: `${stat.size}:${+new Date(stat.mtime)}`,
+        mtime: +new Date(stat.mtime),
+        data: toBase64(FS.readFile(full)),
+      }));
+    } catch (err) {
+      debug('save not copied to localStorage', err); // full: the store alone keeps it
+    }
+  }
+
+  function dropJournal(name, stamp) {
+    try {
+      const entry = localStorage.getItem(JOURNAL + name);
+      if (entry && JSON.parse(entry).stamp === stamp) localStorage.removeItem(JOURNAL + name);
+    } catch (err) { /* dropped on a later pass */ }
+  }
+
+  /** Saves copied to localStorage that the store may not have: [{ name, mtime, bytes }]. */
+  function journaledSaves() {
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key.startsWith(JOURNAL)) continue;
+        const entry = JSON.parse(localStorage.getItem(key));
+        out.push({ name: key.slice(JOURNAL.length), mtime: entry.mtime, bytes: fromBase64(entry.data) });
+      }
+    } catch (err) {
+      debug('localStorage not read', err);
+    }
+    return out;
+  }
+
+  /** Calls journalSave as the engine closes a file it wrote in the saves folder. */
+  function watchSaveWrites() {
+    const FS = Module.FS;
+    const close = FS.close;
+    FS.close = function (stream) {
+      const result = close.apply(this, arguments);
+      const path = stream && stream.path;
+      // O_WRONLY or O_RDWR
+      if (path && path.startsWith(`${SAVE_DIR}/`) && (stream.flags & 3)) {
+        try {
+          journalSave(path);
+        } catch (err) {
+          debug('save not copied', err);
+        }
+        setTimeout(syncSaves, 0);
+      }
+      return result;
+    };
+  }
+
   /** Sends every save file the engine has written since the last pass. */
   async function syncSaves() {
     // The Load screen shows a save as soon as the engine wrote it, kept or not.
@@ -1114,6 +1191,7 @@
         if (!unkeptSince) unkeptSince = Date.now();
         await source.writeSave(file.name, Module.FS.readFile(file.full));
         uploaded.set(file.name, file.stamp);
+        dropJournal(file.name, file.stamp);
       }
       unkeptSince = 0;
     } catch (err) {
@@ -1294,13 +1372,17 @@
     FS.mkdirTree(SAVE_DIR);
     FS.writeFile(`${GAME_DIR}/manifest.tsv`, data.manifest);
     FS.writeFile(`${GAME_DIR}/${data.scriptName}`, data.script);
-    for (const save of data.saves) {
+    // A copy in localStorage is newer than the store's: it goes once kept.
+    const journaled = journaledSaves();
+    for (const save of [...data.saves, ...journaled]) {
       const full = `${SAVE_DIR}/${save.name}`;
       FS.mkdirTree(full.slice(0, full.lastIndexOf('/')));
       FS.writeFile(full, save.bytes);
       FS.utime(full, save.mtime, save.mtime);
     }
     for (const file of listLocalSaves(SAVE_DIR, '', [])) uploaded.set(file.name, file.stamp);
+    for (const save of journaled) uploaded.delete(save.name); // sent on the first pass
+    watchSaveWrites();
     preload = null;
     FS.chdir(GAME_DIR);
 
